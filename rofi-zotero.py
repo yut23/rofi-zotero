@@ -11,6 +11,7 @@ Author: Hans Chen (contact@hanschen.org)
 
 import argparse
 import configparser
+import functools
 import os
 import re
 import shlex
@@ -127,6 +128,34 @@ _QUERY_PATHS = """
                  OR itemAttachments.contentType LIKE '%djvu%' )
 """
 
+_QUERY_COLLECTIONS = """
+    SELECT collectionID,
+           collectionName,
+           parentCollectionID
+    FROM   collections
+"""
+_QUERY_COLLECTION_ITEMS = """
+    SELECT itemID,
+           collectionID
+    FROM   collectionItems
+"""
+
+
+def construct_collection_paths(
+    all_collections: list[tuple[int, str, int | None]]
+) -> dict[int, str]:
+    lookup = {id_: (name, parent) for id_, name, parent in all_collections}
+
+    @functools.lru_cache(maxsize=None)
+    def get_path(id_: int) -> str:
+        name, parent = lookup[id_]
+        if parent is None:
+            return name
+        else:
+            return get_path(parent) + "/" + name
+
+    return {id_: get_path(id_) for id_ in lookup}
+
 
 def format_authors(author_list):
     """Format author string depending on the number of authors.
@@ -219,6 +248,42 @@ def format_item(title, author=None, year=None):
         item_string = FORMAT_ITEM_WITHOUT_AUTHOR_AND_YEAR.format(title=title)
 
     return item_string
+
+
+def align_columns(items, sep="  ") -> list[str]:
+    """Align rows of items into columns, padding with spaces as needed.
+
+    If all values in a column are empty, that column will be excluded.
+
+    Parameters
+    ----------
+    items : Iterable[tuple[str, ...]]
+        An iterable over rows with tuples of strings for the different columns
+    sep : str
+        The separator to insert between columns.
+
+    Returns
+    -------
+    list[str]
+        The formatted rows.
+
+    """
+    items = list(items)
+    if not items:
+        return []
+    # find max width of each column
+    widths = [0] * len(items[0])
+    for cols in items:
+        for i, value in enumerate(cols):
+            widths[i] = max(widths[i], len(value))
+
+    # for each non-empty column, pad to the given width
+    result = []
+    for cols in items:
+        row = [value.ljust(width) for value, width in zip(cols, widths) if width > 0]
+        # strip trailing padding from each row
+        result.append(sep.join(row).rstrip(" "))
+    return result
 
 
 def get_item_info(zotero_sqlite_file, query):
@@ -438,6 +503,14 @@ def parse_args():
             f"path to Zotero config directory. " f'Default: "{DEFAULT_ZOTERO_CONFIG}"'
         ),
     )
+    parser.add_argument(
+        "--collections",
+        dest="include_collection",
+        action="store_true",
+        help=(
+            "include the collection name along with each paper"
+        ),
+    )
 
     return parser.parse_args()
 
@@ -450,6 +523,7 @@ def main(
     rofi_args="-i",
     prompt_paper="paper",
     prompt_attachment="attachment",
+    include_collection=False,
 ):
     """Run main program.
 
@@ -553,6 +627,9 @@ def main(
     all_titles = get_item_info(database_copy, _QUERY_TITLES)
     all_dates = get_item_info(database_copy, _QUERY_DATES)
     all_paths = get_item_info(database_copy, _QUERY_PATHS)
+    if include_collection:
+        all_collections = get_item_info(database_copy, _QUERY_COLLECTIONS)
+        all_collection_items = get_item_info(database_copy, _QUERY_COLLECTION_ITEMS)
 
     os.remove(database_copy)
 
@@ -576,6 +653,11 @@ def main(
         if date_id not in years:
             years[date_id] = date.split("-")[0]
 
+    if include_collection:
+        collection_paths = construct_collection_paths(all_collections)
+        collections = {}
+        for item_id, collection_id in all_collection_items:
+            collections[item_id] = collection_paths[collection_id]
     paths = {}
     for path_id, path in all_paths:
         if path is None:
@@ -601,11 +683,22 @@ def main(
     for item_id, title in titles.items():
         author = authors.get(item_id)
         year = years.get(item_id)
-        item_string = format_item(title=title, author=author, year=year)
-        item_list_with_ids.append((item_string, item_id))
+        if include_collection:
+            collection = collections.get(item_id, "")
+        else:
+            collection = ""
+        item_string = format_item(
+            title=title,
+            author=author,
+            year=year,
+        )
+        order_key = (year, item_string, item_id)
+        item_list_with_ids.append((order_key, item_string, item_id, collection))
 
     item_list_with_ids.sort()
-    item_list = [item for item, _ in item_list_with_ids]
+    item_list = align_columns(
+        (collection, item) for _, item, _, collection in item_list_with_ids
+    )
     items_input = "\n".join(item_list)
 
     if list:
@@ -623,7 +716,7 @@ def main(
     if not selected_index:
         return
 
-    item_id = item_list_with_ids[int(selected_index)][1]
+    item_id = item_list_with_ids[int(selected_index)][2]
     files_to_open = paths[item_id]
     files_to_open.sort()
 
