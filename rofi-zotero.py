@@ -107,7 +107,8 @@ _QUERY_DATES = """
 
 _QUERY_PATHS = """
     SELECT parentInfo.itemID,
-           path
+           path,
+           attachmentItemDataValues.value
     FROM   itemAttachments
            INNER JOIN items AS attachmentInfo
                    ON attachmentInfo.itemID = itemAttachments.itemID
@@ -658,12 +659,13 @@ def main(
         collections = {}
         for item_id, collection_id in all_collection_items:
             collections[item_id] = collection_paths[collection_id]
+
     paths = {}
-    for path_id, path in all_paths:
+    for path_id, path, title in all_paths:
         if path is None:
             continue
 
-        if path_id in paths and str(paths[path_id]) == path:
+        if path_id in paths and str(paths[path_id][0]) == path:
             continue
 
         if path.startswith("attachments:"):
@@ -677,7 +679,7 @@ def main(
 
         if path_id not in paths:
             paths[path_id] = []
-        paths[path_id].append(path)
+        paths[path_id].append((path, title))
 
     item_list_with_ids = []
     for item_id, title in titles.items():
@@ -721,15 +723,17 @@ def main(
     files_to_open.sort()
 
     if len(files_to_open) == 1:
-        file_to_open = files_to_open[0]
+        file_to_open = files_to_open[0][0]
     else:
         format_opts = {
             "maxlen": FORMAT_PATH_MAXLEN,
             "fullpath": FORMAT_PATH_FULLPATH,
             "ending_fraction": FORMAT_PATH_ENDING_FRACTION,
         }
-        files = [format_path(p, **format_opts) for p in files_to_open]
-        files_input = "\n".join(files)
+        # True if there are any files with the same name
+        disamb = len(set(p for p, _ in files_to_open)) != len(files_to_open)
+        files = [(title if disamb else "", format_path(p, **format_opts)) for p, title in files_to_open]
+        files_input = "\n".join(align_columns(files))
 
         rofi_command = (
             ["rofi", "-dmenu", "-format", "i"] + rofi_args + ["-p", prompt_attachment]
@@ -741,7 +745,7 @@ def main(
         if not selected_index:
             return
 
-        file_to_open = files_to_open[int(selected_index)]
+        file_to_open = files_to_open[int(selected_index)][0]
 
     if file_to_open.exists():
         try:
