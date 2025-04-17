@@ -558,7 +558,7 @@ def main(
 
     # Check if Rofi is in PATH early on, as it is also used to show error messages
     try:
-        rofi = subprocess.run(["rofi", "-v"])
+        rofi = subprocess.run(["rofi", "-v"], stdout=subprocess.DEVNULL)
     except FileNotFoundError:
         print(
             "'rofi' command not found, make sure it is installed and "
